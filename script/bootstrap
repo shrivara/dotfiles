@@ -34,18 +34,18 @@ while IFS= read -r -d '' source; do
   target="$HOME/.$name"
 
   if [[ -L "$target" && "$(readlink "$target")" == "$source" ]]; then
-    status "ALREADY LINKED      : $target"
+    status "ALREADY LINKED: $target"
     continue
   fi
 
   if [[ -e "$target" || -L "$target" ]]; then
     mkdir -p "$backup_dir"
     mv "$target" "$backup_dir/$name"
-    status "BACKUP CREATED      : $target"
+    status "BACKUP CREATED: $target"
   fi
 
   ln -s "$source" "$target"
-  status "LINK ESTABLISHED   : $target → $source"
+  status "LINK ESTABLISHED: $target → $source"
 done < <(find "$repo_dir" -type f -name '*.symlink' -print0)
 
 status 'BOOT SEQUENCE COMPLETE'
