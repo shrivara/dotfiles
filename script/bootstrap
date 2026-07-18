@@ -32,6 +32,7 @@ status 'BEGIN CONFIGURATION LINK'
 while IFS= read -r -d '' source; do
   name="$(basename "$source" .symlink)"
   target="$HOME/.$name"
+  status "CONFIGURING: $target"
 
   if [[ -L "$target" && "$(readlink "$target")" == "$source" ]]; then
     status "ALREADY LINKED: $target"
