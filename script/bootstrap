@@ -5,6 +5,21 @@ set -euo pipefail
 repo_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 backup_dir="$HOME/.dotfiles-backup/$(date +%Y%m%d%H%M%S)"
 
+show_intro() {
+  # Keep logs clean when the script is run non-interactively.
+  [[ -t 1 ]] || return
+
+  local frames=("◜" "◠" "◝" "◞" "◡" "◟")
+  local frame
+  for frame in "${frames[@]}" "${frames[@]}"; do
+    printf '\r  \033[38;5;141m%s\033[0m  bootstrapping dotfiles' "$frame"
+    sleep 0.09
+  done
+  printf '\r  \033[38;5;114m✓\033[0m  dotfiles ready to configure\n\n'
+}
+
+show_intro
+
 while IFS= read -r -d '' source; do
   name="$(basename "$source" .symlink)"
   target="$HOME/.$name"
