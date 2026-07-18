@@ -18,4 +18,10 @@ cd ~/.dotfiles
 script/bootstrap
 ```
 
+To also import the Terminal.app profile:
+
+```sh
+script/bootstrap --terminal
+```
+
 Existing configuration files are backed up to `~/.dotfiles-backup/` before they are replaced with symlinks.
