@@ -1,11 +1,11 @@
 # Dotfiles
 
-Personal shell and terminal configuration.
+Personal configuration files and setup scripts.
 
-## Install
+## Installation
 
 ```sh
+git clone https://github.com/shrivara/dotfiles.git ~/.dotfiles
+cd ~/.dotfiles
 ./install.sh
 ```
-
-This imports the included Terminal.app profile. After it opens, select the profile as Terminal's default in **Terminal → Settings → Profiles**.
