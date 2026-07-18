@@ -31,26 +31,38 @@ show_intro() {
     sleep 0.045
   done
 
-  printf '\n  %s> CONFIGURATION LINK ONLINE%s\n\n' "$green" "$reset"
+  printf '\n'
+}
+
+status() {
+  local green='' reset=''
+  if [[ -t 1 && "${TERM:-dumb}" != "dumb" && -z "${NO_COLOR:-}" ]]; then
+    green=$'\033[38;5;82m'
+    reset=$'\033[0m'
+  fi
+  printf '  %s> %s%s\n' "$green" "$1" "$reset"
 }
 
 show_intro
+status 'BEGIN CONFIGURATION LINK'
 
 while IFS= read -r -d '' source; do
   name="$(basename "$source" .symlink)"
   target="$HOME/.$name"
 
   if [[ -L "$target" && "$(readlink "$target")" == "$source" ]]; then
-    printf 'Already linked: %s\n' "$target"
+    status "ALREADY LINKED      : $target"
     continue
   fi
 
   if [[ -e "$target" || -L "$target" ]]; then
     mkdir -p "$backup_dir"
     mv "$target" "$backup_dir/$name"
-    printf 'Backed up: %s\n' "$target"
+    status "BACKUP CREATED      : $target"
   fi
 
   ln -s "$source" "$target"
-  printf 'Linked: %s → %s\n' "$target" "$source"
+  status "LINK ESTABLISHED   : $target → $source"
 done < <(find "$repo_dir" -type f -name '*.symlink' -print0)
+
+status 'BOOT SEQUENCE COMPLETE'
