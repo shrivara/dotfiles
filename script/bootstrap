@@ -17,13 +17,23 @@ show_intro() {
   printf '\n  %sDOTFILES%s\n\n' "$green" "$reset"
 }
 
-status() {
-  local green='' reset=''
+print_status() {
+  local color='' reset=''
+  local color_code="$1"
+  local message="$2"
   if [[ -t 1 && "${TERM:-dumb}" != "dumb" && -z "${NO_COLOR:-}" ]]; then
-    green=$'\033[38;5;82m'
+    color=$'\033['"$color_code"'m'
     reset=$'\033[0m'
   fi
-  printf '  %s> %s%s\n' "$green" "$1" "$reset"
+  printf '  %s> %s%s\n' "$color" "$message" "$reset"
+}
+
+status() {
+  print_status '38;5;245' "$1"
+}
+
+important() {
+  print_status '38;5;82' "$1"
 }
 
 show_intro
@@ -53,8 +63,8 @@ profile="$repo_dir/terminal/Xi.terminal"
 if [[ -f "$profile" ]]; then
   status 'CONFIGURING: Terminal.app profile'
   open "$profile"
-  status 'TERMINAL PROFILE IMPORTED: Xi'
+  important 'TERMINAL PROFILE IMPORTED: Xi'
 fi
 
-status 'BOOT SEQUENCE COMPLETE'
+important 'BOOT SEQUENCE COMPLETE'
 printf '\n'
