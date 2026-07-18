@@ -14,22 +14,30 @@ show_intro() {
     return
   fi
 
-  local frames=(
-    '▁▂▃▄▅▆▇█▇▆▅▄▃▂▁'
-    '▂▃▄▅▆▇█▇▆▅▄▃▂▁▂'
-    '▃▄▅▆▇█▇▆▅▄▃▂▁▂▃'
-    '▄▅▆▇█▇▆▅▄▃▂▁▂▃▄'
-    '▅▆▇█▇▆▅▄▃▂▁▂▃▄▅'
-    '▆▇█▇▆▅▄▃▂▁▂▃▄▅▆'
-  )
-  local frame
+  local dim=$'\033[38;5;245m'
+  local bright=$'\033[38;5;255m'
+  local reset=$'\033[0m'
+  local scan row frame=0
 
   printf '\n'
-  for frame in "${frames[@]}" "${frames[@]}"; do
-    printf '\r  \033[38;5;245m//\033[0m \033[38;5;82m%s\033[0m \033[38;5;245m//\033[0m' "$frame"
-    sleep 0.06
+  for scan in 0 1 2 1 0; do
+    for row in 0 1 2; do
+      if [[ "$row" -eq "$scan" ]]; then
+        printf '  %s' "$bright"
+      else
+        printf '  %s' "$dim"
+      fi
+      case "$row" in
+        0) printf '╔══════════════════════════════╗%s\n' "$reset" ;;
+        1) printf '║ ░▒▓█       DOTFILES       █▓▒░ ║%s\n' "$reset" ;;
+        2) printf '╚══════════════════════════════╝%s\n' "$reset" ;;
+      esac
+    done
+    frame=$((frame + 1))
+    sleep 0.1
+    [[ "$frame" -lt 5 ]] && printf '\033[3A'
   done
-  printf '\r  \033[38;5;245m//\033[0m \033[38;5;82mDOTFILES\033[0m \033[38;5;245m//\033[0m\n\n'
+  printf '\n'
 }
 
 print_status() {
