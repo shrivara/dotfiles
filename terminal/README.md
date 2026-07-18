@@ -1,5 +1,5 @@
 # Terminal.app
 
-`Xi.terminal` is the Terminal.app profile, including the Berkeley Mono font.
+`Xi.terminal` is a Terminal.app profile using Berkeley Mono and the [Catppuccin Mocha](https://github.com/catppuccin/Terminal.app) color palette.
 
-To install it, open `Xi.terminal` in Finder (or run `open Xi.terminal`), then choose it as Terminal's default profile in **Terminal → Settings → Profiles**.
+Run `script/bootstrap` to install or update it, then restart Terminal.app. **Xi** is set as the default profile.

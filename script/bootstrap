@@ -4,13 +4,10 @@ set -euo pipefail
 
 repo_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 backup_dir="$HOME/.dotfiles-backup/$(date +%Y%m%d%H%M%S)"
-install_terminal=false
-
 case "${1:-}" in
   '') ;;
-  --terminal) install_terminal=true ;;
   -h|--help)
-    printf 'Usage: %s [--terminal]\n' "${BASH_SOURCE[0]}"
+    printf 'Usage: %s\n' "${BASH_SOURCE[0]}"
     exit 0
     ;;
   *)
@@ -18,6 +15,44 @@ case "${1:-}" in
     exit 2
     ;;
 esac
+
+install_terminal_profile() {
+  local profile="$1"
+  local preferences
+
+  preferences="$(mktemp)"
+  if ! defaults export com.apple.Terminal "$preferences" 2>/dev/null; then
+    : > "$preferences"
+  fi
+
+  python3 - "$preferences" "$profile" <<'PY'
+import os
+import plistlib
+import sys
+
+preferences_path, profile_path = sys.argv[1:]
+prefs = {}
+if os.path.getsize(preferences_path):
+    with open(preferences_path, "rb") as file:
+        prefs = plistlib.load(file)
+with open(profile_path, "rb") as file:
+    profile = plistlib.load(file)
+
+name = profile["name"]
+settings = prefs.setdefault("Window Settings", {})
+settings[name] = profile
+for duplicate in list(settings):
+    suffix = duplicate.removeprefix(f"{name} ")
+    if duplicate != name and suffix.isdigit():
+        del settings[duplicate]
+prefs["Default Window Settings"] = name
+
+with open(preferences_path, "wb") as file:
+    plistlib.dump(prefs, file, fmt=plistlib.FMT_XML, sort_keys=False)
+PY
+  defaults import com.apple.Terminal "$preferences"
+  rm -f "$preferences"
+}
 
 show_intro() {
   if [[ ! -t 1 || "${TERM:-dumb}" == "dumb" ]]; then
@@ -71,12 +106,15 @@ while IFS= read -r -d '' source; do
   link_file "$source" "$HOME/.pi/agent/extensions/$(basename "$source")"
 done < <(find "$repo_dir/pi/extensions" -type f -print0)
 
-profile="$repo_dir/terminal/Xi.terminal"
-if [[ "$install_terminal" == true && -f "$profile" ]]; then
-  status 'CONFIGURING: Terminal.app profile'
-  open "$profile"
-  important 'TERMINAL PROFILE IMPORTED: Xi'
-fi
+while IFS= read -r -d '' source; do
+  link_file "$source" "$HOME/.pi/agent/themes/$(basename "$source")"
+done < <(find "$repo_dir/pi/themes" -type f -print0)
+
+while IFS= read -r -d '' profile; do
+  status "CONFIGURING: Terminal.app profile: $(basename "$profile")"
+  install_terminal_profile "$profile"
+done < <(find "$repo_dir/terminal" -maxdepth 1 -type f -name '*.terminal' -print0)
+important 'TERMINAL PROFILES UPDATED (restart Terminal.app to apply)'
 
 important 'CONFIGURATION COMPLETE'
 printf '\n'

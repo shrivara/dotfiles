@@ -1,7 +1,14 @@
 {
   "lastChangelogVersion": "0.80.10",
-  "theme": "dark",
+  "theme": "catppuccin-mocha",
   "defaultProvider": "openai-codex",
   "defaultModel": "gpt-5.6-terra",
-  "defaultThinkingLevel": "medium"
+  "defaultThinkingLevel": "medium",
+  "showHardwareCursor": true,
+  "editorPaddingX": 1,
+  "outputPad": 1,
+  "terminal": {
+    "showTerminalProgress": false
+  },
+  "showCacheMissNotices": true
 }
