@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Link tracked configuration files into $HOME and import the Terminal profile.
+set -euo pipefail
+
+repo_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+backup_dir="$HOME/.dotfiles-backup/$(date +%Y%m%d%H%M%S)"
+
+while IFS= read -r -d '' source; do
+  name="$(basename "$source" .symlink)"
+  target="$HOME/.$name"
+
+  if [[ -L "$target" && "$(readlink "$target")" == "$source" ]]; then
+    printf 'Already linked: %s\n' "$target"
+    continue
+  fi
+
+  if [[ -e "$target" || -L "$target" ]]; then
+    mkdir -p "$backup_dir"
+    mv "$target" "$backup_dir/$name"
+    printf 'Backed up: %s\n' "$target"
+  fi
+
+  ln -s "$source" "$target"
+  printf 'Linked: %s → %s\n' "$target" "$source"
+done < <(find "$repo_dir" -type f -name '*.symlink' -print0)
+
+profile="$repo_dir/terminal/Xi.terminal"
+if [[ -f "$profile" ]]; then
+  open "$profile"
+  printf '%s\n' 'Terminal profile imported. Select “Xi” as the default in Terminal Settings.'
+fi

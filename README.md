@@ -2,10 +2,20 @@
 
 Personal configuration files and setup scripts.
 
+## Structure
+
+- `git/` — Git configuration
+- `terminal/` — Terminal.app profiles
+- `script/` — setup and maintenance scripts
+
+Files ending in `.symlink` are linked into the home directory by the bootstrap script.
+
 ## Installation
 
 ```sh
 git clone https://github.com/shrivara/dotfiles.git ~/.dotfiles
 cd ~/.dotfiles
-./install.sh
+script/bootstrap
 ```
+
+Existing configuration files are backed up to `~/.dotfiles-backup/` before they are replaced with symlinks.
