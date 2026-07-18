@@ -3,7 +3,7 @@
 set -euo pipefail
 
 repo_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-profile="$repo_dir/terminal/Default.terminal"
+profile="$repo_dir/terminal/Xi.terminal"
 
 if [[ ! -f "$profile" ]]; then
   printf 'Terminal profile not found: %s\n' "$profile" >&2
@@ -11,4 +11,4 @@ if [[ ! -f "$profile" ]]; then
 fi
 
 open "$profile"
-printf '%s\n' 'Terminal imported. In Terminal → Settings → Profiles, select “Default” and make it the default profile.'
+printf '%s\n' 'Terminal imported. In Terminal → Settings → Profiles, select “Xi” and make it the default profile.'
