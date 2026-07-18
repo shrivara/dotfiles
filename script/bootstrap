@@ -20,7 +20,9 @@ case "${1:-}" in
 esac
 
 show_intro() {
-  [[ -t 1 && "${TERM:-dumb}" != "dumb" ]] || return
+  if [[ ! -t 1 || "${TERM:-dumb}" == "dumb" ]]; then
+    return 0
+  fi
   printf '\n  DOTFILES\n\n'
 }
 
@@ -32,28 +34,42 @@ important() {
   status "$1"
 }
 
+link_file() {
+  local source="$1"
+  local target="$2"
+  local relative_target backup_path
+
+  status "CONFIGURING: $target"
+  if [[ -L "$target" && "$(readlink "$target")" == "$source" ]]; then
+    status "ALREADY LINKED: $target"
+    return
+  fi
+
+  if [[ -e "$target" || -L "$target" ]]; then
+    relative_target="${target#"$HOME"/}"
+    backup_path="$backup_dir/$relative_target"
+    mkdir -p "$(dirname "$backup_path")"
+    mv "$target" "$backup_path"
+    status "BACKUP CREATED: $target"
+  fi
+
+  mkdir -p "$(dirname "$target")"
+  ln -s "$source" "$target"
+  status "LINK ESTABLISHED: $target → $source"
+}
+
 show_intro
 status 'CONFIGURING DOTFILES'
 
 while IFS= read -r -d '' source; do
   name="$(basename "$source" .symlink)"
-  target="$HOME/.$name"
-  status "CONFIGURING: $target"
-
-  if [[ -L "$target" && "$(readlink "$target")" == "$source" ]]; then
-    status "ALREADY LINKED: $target"
-    continue
-  fi
-
-  if [[ -e "$target" || -L "$target" ]]; then
-    mkdir -p "$backup_dir"
-    mv "$target" "$backup_dir/$name"
-    status "BACKUP CREATED: $target"
-  fi
-
-  ln -s "$source" "$target"
-  status "LINK ESTABLISHED: $target → $source"
+  link_file "$source" "$HOME/.$name"
 done < <(find "$repo_dir" -type f -name '*.symlink' -print0)
+
+link_file "$repo_dir/pi/settings.json" "$HOME/.pi/agent/settings.json"
+while IFS= read -r -d '' source; do
+  link_file "$source" "$HOME/.pi/agent/extensions/$(basename "$source")"
+done < <(find "$repo_dir/pi/extensions" -type f -print0)
 
 profile="$repo_dir/terminal/Xi.terminal"
 if [[ "$install_terminal" == true && -f "$profile" ]]; then
