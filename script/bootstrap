@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Link tracked configuration files into $HOME and import the Terminal profile.
+# Link tracked configuration files into $HOME.
 set -euo pipefail
 
 repo_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -38,9 +38,3 @@ while IFS= read -r -d '' source; do
   ln -s "$source" "$target"
   printf 'Linked: %s → %s\n' "$target" "$source"
 done < <(find "$repo_dir" -type f -name '*.symlink' -print0)
-
-profile="$repo_dir/terminal/Xi.terminal"
-if [[ -f "$profile" ]]; then
-  open "$profile"
-  printf '%s\n' 'Terminal profile imported. Select “Xi” as the default in Terminal Settings.'
-fi
