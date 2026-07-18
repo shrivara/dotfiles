@@ -24,23 +24,12 @@ show_intro() {
   printf '\n  DOTFILES\n\n'
 }
 
-print_status() {
-  local color='' reset=''
-  local color_code="$1"
-  local message="$2"
-  if [[ -t 1 && "${TERM:-dumb}" != "dumb" && -z "${NO_COLOR:-}" ]]; then
-    color=$'\033['"$color_code"'m'
-    reset=$'\033[0m'
-  fi
-  printf '  %s> %s%s\n' "$color" "$message" "$reset"
-}
-
 status() {
-  print_status '38;5;245' "$1"
+  printf '  > %s\n' "$1"
 }
 
 important() {
-  print_status '38;5;82' "$1"
+  status "$1"
 }
 
 show_intro
