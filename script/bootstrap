@@ -7,15 +7,31 @@ backup_dir="$HOME/.dotfiles-backup/$(date +%Y%m%d%H%M%S)"
 
 show_intro() {
   # Keep logs clean when the script is run non-interactively.
-  [[ -t 1 ]] || return
+  [[ -t 1 && "${TERM:-dumb}" != "dumb" ]] || return
 
-  local frames=("◜" "◠" "◝" "◞" "◡" "◟")
-  local frame
-  for frame in "${frames[@]}" "${frames[@]}"; do
-    printf '\r  \033[38;5;141m%s\033[0m  bootstrapping dotfiles' "$frame"
-    sleep 0.09
+  local green='' dim='' reset='' width=24 filled empty percent i
+  if [[ -z "${NO_COLOR:-}" ]]; then
+    green=$'\033[38;5;82m'
+    dim=$'\033[2m'
+    reset=$'\033[0m'
+  fi
+
+  printf '\n  %s╔══════════════════════════════════════╗%s\n' "$green" "$reset"
+  printf '  %s║  DOTFILES BIOS  //  REV 1.0          ║%s\n' "$green" "$reset"
+  printf '  %s╚══════════════════════════════════════╝%s\n' "$green" "$reset"
+  printf '  %s> MOUNTING HOME DIRECTORY%s\n' "$dim" "$reset"
+
+  for ((i = 0; i <= width; i++)); do
+    printf -v filled '%*s' "$i" ''
+    printf -v empty '%*s' "$((width - i))" ''
+    filled=${filled// /█}
+    empty=${empty// /░}
+    percent=$((i * 100 / width))
+    printf '\r  %s[%s%s%s%s] %3d%%' "$green" "$filled" "$dim" "$empty" "$reset" "$percent"
+    sleep 0.045
   done
-  printf '\r  \033[38;5;114m✓\033[0m  dotfiles ready to configure\n\n'
+
+  printf '\n  %s> CONFIGURATION LINK ONLINE%s\n\n' "$green" "$reset"
 }
 
 show_intro
