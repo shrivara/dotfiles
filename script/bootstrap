@@ -9,12 +9,18 @@ show_intro() {
   # Keep logs clean when the script is run non-interactively.
   [[ -t 1 && "${TERM:-dumb}" != "dumb" ]] || return
 
-  local green='' reset=''
-  if [[ -z "${NO_COLOR:-}" ]]; then
-    green=$'\033[38;5;82m'
-    reset=$'\033[0m'
+  if [[ -n "${NO_COLOR:-}" ]]; then
+    printf '\n  DOTFILES\n\n'
+    return
   fi
-  printf '\n  %sDOTFILES%s\n\n' "$green" "$reset"
+
+  printf '\n'
+  printf '  \033[38;5;51m██████╗  ██████╗ ████████╗███████╗██╗██╗     ███████╗███████╗\033[0m\n'
+  printf '  \033[38;5;45m██╔══██╗██╔═══██╗╚══██╔══╝██╔════╝██║██║     ██╔════╝██╔════╝\033[0m\n'
+  printf '  \033[38;5;39m██║  ██║██║   ██║   ██║   █████╗  ██║██║     █████╗  ███████╗\033[0m\n'
+  printf '  \033[38;5;129m██║  ██║██║   ██║   ██║   ██╔══╝  ██║██║     ██╔══╝  ╚════██║\033[0m\n'
+  printf '  \033[38;5;201m██████╔╝╚██████╔╝   ██║   ██║     ██║███████╗███████╗███████║\033[0m\n'
+  printf '  \033[38;5;213m╚═════╝  ╚═════╝    ╚═╝   ╚═╝     ╚═╝╚══════╝╚══════╝╚══════╝\033[0m\n\n'
 }
 
 print_status() {
