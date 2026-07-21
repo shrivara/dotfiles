@@ -7,6 +7,7 @@ Personal configuration files and setup scripts.
 - `git/` — Git configuration
 - `pi/` — Pi settings, extensions, and themes
 - `terminal/` — Terminal.app profiles
+- `zsh/` — Zsh configuration
 - `script/` — setup and maintenance scripts
 
 Files ending in `.symlink` are linked into the home directory by the bootstrap script.

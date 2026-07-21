@@ -55,28 +55,39 @@ PY
 }
 
 show_intro() {
-  if [[ ! -t 1 || "${TERM:-dumb}" == "dumb" ]]; then
-    return 0
-  fi
-  printf '\n  DOTFILES\n\n'
+  [[ -t 1 && "${TERM:-dumb}" != "dumb" ]] || return
+  printf '\n      _/\n     / /          dotfiles installer\n    /_/           github.com/shrivara/dotfiles\n\n'
 }
+
+status_color=''
+notice_color=''
+reset_color=''
+if [[ -t 1 && "${TERM:-dumb}" != "dumb" && -z "${NO_COLOR:-}" ]]; then
+  status_color=$'\033[32m'
+  notice_color=$'\033[33m'
+  reset_color=$'\033[0m'
+fi
 
 status() {
-  printf '  > %s\n' "$1"
+  printf '  %s>%s %s\n' "$status_color" "$reset_color" "$1"
 }
 
-important() {
-  status "$1"
+notice() {
+  printf '\n  %s!%s %s\n' "$notice_color" "$reset_color" "$1"
+}
+
+home_path() {
+  printf '~%s' "${1#"$HOME"}"
 }
 
 link_file() {
   local source="$1"
   local target="$2"
-  local relative_target backup_path
+  local relative_target backup_path display_target
 
-  status "CONFIGURING: $target"
+  display_target="$(home_path "$target")"
   if [[ -L "$target" && "$(readlink "$target")" == "$source" ]]; then
-    status "ALREADY LINKED: $target"
+    status "already linked $display_target"
     return
   fi
 
@@ -85,16 +96,16 @@ link_file() {
     backup_path="$backup_dir/$relative_target"
     mkdir -p "$(dirname "$backup_path")"
     mv "$target" "$backup_path"
-    status "BACKUP CREATED: $target"
+    status "backed up $display_target"
   fi
 
   mkdir -p "$(dirname "$target")"
   ln -s "$source" "$target"
-  status "LINK ESTABLISHED: $target → $source"
+  status "linked $display_target"
 }
 
 show_intro
-status 'CONFIGURING DOTFILES'
+status 'configuring dotfiles...'
 
 while IFS= read -r -d '' source; do
   name="$(basename "$source" .symlink)"
@@ -111,10 +122,10 @@ while IFS= read -r -d '' source; do
 done < <(find "$repo_dir/pi/themes" -type f -print0)
 
 while IFS= read -r -d '' profile; do
-  status "CONFIGURING: Terminal.app profile: $(basename "$profile")"
+  status "installing Terminal.app profile $(basename "$profile" .terminal)..."
   install_terminal_profile "$profile"
 done < <(find "$repo_dir/terminal" -maxdepth 1 -type f -name '*.terminal' -print0)
-important 'TERMINAL PROFILES UPDATED (restart Terminal.app to apply)'
+notice 'Terminal.app profiles updated; restart Terminal.app to apply them.'
 
-important 'CONFIGURATION COMPLETE'
+status 'dotfiles configured'
 printf '\n'
