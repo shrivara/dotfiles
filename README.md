@@ -5,7 +5,7 @@ Personal configuration files and setup scripts.
 ## Structure
 
 - `git/` — Git configuration
-- `pi/` — Pi settings, extensions, and themes
+- `pi/` — Pi settings, extensions, themes, and skills
 - `terminal/` — Terminal.app profiles
 - `zsh/` — Zsh configuration
 - `script/` — setup and maintenance scripts
