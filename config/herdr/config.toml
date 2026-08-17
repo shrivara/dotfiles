@@ -1,0 +1,24 @@
+onboarding = false
+
+# Match Ghostty's Ayu palette.
+[theme]
+name = "terminal"
+
+auto_switch = false
+[theme.custom]
+accent = "#59c2ff"
+panel_bg = "reset"
+surface0 = "#1e232b"
+surface1 = "#3b4754"
+surface_dim = "#11151c"
+overlay0 = "#686868"
+overlay1 = "#8a9199"
+text = "#bfbdb6"
+subtext0 = "#a1a09a"
+mauve = "#d2a6ff"
+green = "#aad94c"
+yellow = "#ffb454"
+red = "#f07178"
+blue = "#59c2ff"
+teal = "#95e6cb"
+peach = "#f9af4f"

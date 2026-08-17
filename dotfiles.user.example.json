@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "services": [
+    "zsh",
+    "git",
+    "gh",
+    "ghostty",
+    "herdr",
+    "pi"
+  ],
+  "git": {
+    "name": "Your Name",
+    "email": "you@example.com"
+  }
+}

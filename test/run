@@ -1,0 +1,108 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+project="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+sandbox="$(mktemp -d "${TMPDIR:-/tmp}/dotfiles-test.XXXXXX")"
+repo="$sandbox/repo"
+home="$sandbox/home"
+state="$sandbox/state"
+trap 'rm -rf "$sandbox"' EXIT
+
+fail() {
+  printf 'test failed: %s\n' "$1" >&2
+  exit 1
+}
+
+mkdir -p "$repo" "$home/.pi/agent/extensions" "$home/.pi/agent/themes"
+cp "$project/dotfiles" "$project/dotfiles.json" "$project/dotfiles.user.example.json" "$repo/"
+cp -R "$project/config" "$repo/config"
+cat > "$repo/dotfiles.user.json" <<'JSON'
+{
+  "schemaVersion": 1,
+  "services": ["zsh", "git", "gh", "ghostty", "herdr", "pi"],
+  "git": {
+    "name": "Test User",
+    "email": "test@example.com"
+  }
+}
+JSON
+chmod +x "$repo/dotfiles"
+
+printf 'old git config\n' > "$home/.gitconfig"
+printf 'remove me\n' > "$home/.pi/agent/extensions/old.ts"
+printf 'generated\n' > "$home/.pi/agent/extensions/herdr-agent-state.ts"
+printf 'old theme\n' > "$home/.pi/agent/themes/old.json"
+
+set +e
+HOME="$home" XDG_STATE_HOME="$state" DOTFILES_TESTING=1 \
+  "$repo/dotfiles" apply >"$sandbox/refused" 2>&1
+code=$?
+set -e
+[[ "$code" == 1 ]] || fail "destructive apply did not require confirmation"
+grep -q 'destructive changes require confirmation' "$sandbox/refused" || fail "destructive warning was not shown"
+grep -q 'old git config' "$home/.gitconfig" || fail "refused apply changed the filesystem"
+
+HOME="$home" XDG_STATE_HOME="$state" DOTFILES_TESTING=1 \
+  "$repo/dotfiles" apply --yes >/dev/null 2>&1
+
+[[ -L "$home/.gitconfig" ]] || fail "git config was not linked"
+repo_real="$(cd "$repo" && pwd -P)"
+[[ "$(readlink "$home/.gitconfig")" == "$repo_real/config/git/config" ]] || fail "git link target is wrong"
+[[ -L "$home/.pi/agent/settings.json" ]] || fail "Pi settings were not linked"
+[[ -L "$home/.config/dotfiles/git-user.inc" ]] || fail "generated Git identity was not linked"
+[[ "$(HOME="$home" git config --global --includes --get user.name)" == "Test User" ]] || fail "user Git identity was not generated"
+[[ ! -e "$home/.pi/agent/extensions/old.ts" ]] || fail "unmanaged extension was not pruned"
+[[ ! -e "$home/.pi/agent/themes/old.json" ]] || fail "unmanaged theme was not pruned"
+[[ -f "$home/.pi/agent/extensions/herdr-agent-state.ts" ]] || fail "generated integration was not preserved"
+[[ -d "$home/.pi/agent/prompts" ]] || fail "owned empty prompts directory was not created"
+grep -R -q 'old git config' "$state/dotfiles/backups" || fail "conflicting file was not backed up"
+
+rm "$home/.gitconfig"
+printf '[include]\n\tpath = ~/.config/dotfiles/git-user.inc\n\n[core]\n\teditor = test-editor\n' > "$home/.gitconfig"
+HOME="$home" XDG_STATE_HOME="$state" DOTFILES_TESTING=1 \
+  "$repo/dotfiles" save --yes >/dev/null 2>&1
+grep -q 'editor = test-editor' "$repo/config/git/config" || fail "save did not update the repository"
+[[ -f "$home/.gitconfig" && ! -L "$home/.gitconfig" ]] || fail "save unexpectedly changed the machine file"
+
+HOME="$home" XDG_STATE_HOME="$state" DOTFILES_TESTING=1 \
+  "$repo/dotfiles" apply --yes >/dev/null 2>&1
+[[ -L "$home/.gitconfig" ]] || fail "apply did not restore the symlink"
+grep -q 'editor = test-editor' "$home/.gitconfig" || fail "saved content was not applied"
+
+rm "$home/.gitconfig"
+printf '[user]\n\tname = Dry Run\n' > "$home/.gitconfig"
+before="$(shasum -a 256 "$repo/config/git/config" | cut -d' ' -f1)"
+HOME="$home" XDG_STATE_HOME="$state" DOTFILES_TESTING=1 \
+  "$repo/dotfiles" save --dry-run >/dev/null 2>&1
+after="$(shasum -a 256 "$repo/config/git/config" | cut -d' ' -f1)"
+[[ "$before" == "$after" ]] || fail "save dry run changed the repository"
+
+printf 'dry-run sentinel\n' > "$home/.pi/agent/extensions/unmanaged.ts"
+HOME="$home" XDG_STATE_HOME="$state" DOTFILES_TESTING=1 \
+  "$repo/dotfiles" apply --dry-run >/dev/null 2>&1
+[[ -f "$home/.pi/agent/extensions/unmanaged.ts" ]] || fail "apply dry run changed the filesystem"
+
+rm "$home/.zshrc"
+printf 'disabled service sentinel\n' > "$home/.zshrc"
+python3 - "$repo/dotfiles.user.json" <<'PY'
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+profile = json.loads(path.read_text())
+profile["services"] = ["git"]
+path.write_text(json.dumps(profile, indent=2) + "\n")
+PY
+HOME="$home" XDG_STATE_HOME="$state" DOTFILES_TESTING=1 \
+  "$repo/dotfiles" apply --yes >/dev/null 2>&1
+grep -q 'disabled service sentinel' "$home/.zshrc" || fail "disabled service was modified"
+[[ ! -e "$home/.pi/agent/settings.json" ]] || fail "retired managed link was not removed"
+
+set +e
+HOME="$home" XDG_STATE_HOME="$state" "$repo/dotfiles" unknown >/dev/null 2>&1
+code=$?
+set -e
+[[ "$code" == 2 ]] || fail "unknown action did not fail"
+
+printf 'dotfiles test: ok\n'

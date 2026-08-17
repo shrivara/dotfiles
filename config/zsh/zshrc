@@ -1,0 +1,12 @@
+# User-installed command-line tools.
+typeset -U path PATH
+path=("$HOME/.local/bin" $path)
+
+# Show the current Git branch when inside a repository.
+autoload -Uz add-zsh-hook vcs_info
+zstyle ':vcs_info:*' enable git
+zstyle ':vcs_info:git:*' formats ' %F{cyan}(%b)%f'
+add-zsh-hook precmd vcs_info
+
+setopt prompt_subst
+PROMPT='%1~${vcs_info_msg_0_} ▲ '

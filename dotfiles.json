@@ -1,0 +1,199 @@
+{
+  "schemaVersion": 1,
+  "services": [
+    {
+      "name": "zsh",
+      "description": "Interactive shell and prompt",
+      "files": [
+        {
+          "source": "config/zsh/zshrc",
+          "target": "~/.zshrc"
+        }
+      ],
+      "version": {
+        "command": ["zsh", "--version"],
+        "regex": "zsh ([0-9.]+)",
+        "expected": "5.9"
+      }
+    },
+    {
+      "name": "git",
+      "description": "Git identity and GitHub credential helper",
+      "files": [
+        {
+          "source": "config/git/config",
+          "target": "~/.gitconfig"
+        }
+      ],
+      "generatedFiles": [
+        {
+          "kind": "gitIdentity",
+          "source": ".generated/git-user.inc",
+          "target": "~/.config/dotfiles/git-user.inc"
+        }
+      ],
+      "ownedRoots": [
+        {
+          "target": "~/.config/dotfiles",
+          "preserve": []
+        }
+      ],
+      "version": {
+        "command": ["git", "--version"],
+        "regex": "git version ([0-9.]+)",
+        "expected": "2.50.1"
+      }
+    },
+    {
+      "name": "gh",
+      "description": "GitHub CLI preferences (authentication is preserved)",
+      "files": [
+        {
+          "source": "config/gh/config.yml",
+          "target": "~/.config/gh/config.yml"
+        }
+      ],
+      "ownedRoots": [
+        {
+          "target": "~/.config/gh",
+          "preserve": ["hosts.yml"]
+        }
+      ],
+      "version": {
+        "command": ["gh", "--version"],
+        "regex": "gh version ([0-9.]+)",
+        "expected": "2.97.0"
+      }
+    },
+    {
+      "name": "ghostty",
+      "description": "Active terminal, Ayu theme, Berkeley Mono, and application icon",
+      "files": [
+        {
+          "source": "config/ghostty/config",
+          "target": "~/.config/ghostty/config"
+        },
+        {
+          "source": "config/ghostty/ayu-mirage.icns",
+          "target": "~/.config/ghostty/ayu-mirage.icns"
+        }
+      ],
+      "ownedRoots": [
+        {
+          "target": "~/.config/ghostty",
+          "preserve": []
+        }
+      ],
+      "version": {
+        "command": ["ghostty", "+version"],
+        "regex": "Ghostty ([0-9.]+)",
+        "expected": "1.3.1"
+      },
+      "requirements": [
+        {
+          "name": "Berkeley Mono",
+          "command": ["/usr/bin/mdls", "-name", "kMDItemVersion", "{home}/Library/Fonts/BerkeleyMono-Regular.otf"],
+          "regex": "kMDItemVersion\\s*=\\s*\"Version ([0-9.]+)\"",
+          "expected": "2.002"
+        }
+      ]
+    },
+    {
+      "name": "herdr",
+      "description": "Terminal workspace manager and generated Pi integration",
+      "files": [
+        {
+          "source": "config/herdr/config.toml",
+          "target": "~/.config/herdr/config.toml"
+        }
+      ],
+      "ownedRoots": [
+        {
+          "target": "~/.config/herdr",
+          "preserve": [
+            ".plugins.lock",
+            "*.log",
+            "*.sock",
+            "release-notes.json",
+            "session.json"
+          ]
+        }
+      ],
+      "version": {
+        "command": ["herdr", "--version"],
+        "regex": "herdr ([0-9.]+)",
+        "expected": "0.8.0"
+      },
+      "integration": {
+        "provider": "herdr",
+        "name": "pi",
+        "expectedVersion": "8"
+      }
+    },
+    {
+      "name": "pi",
+      "description": "Coding agent settings, extensions, skills, and themes",
+      "files": [
+        {
+          "source": "config/pi/settings.json",
+          "target": "~/.pi/agent/settings.json"
+        },
+        {
+          "source": "config/pi/extensions/compact-ui.ts",
+          "target": "~/.pi/agent/extensions/compact-ui.ts"
+        },
+        {
+          "source": "config/pi/extensions/sudo.ts",
+          "target": "~/.pi/agent/extensions/sudo.ts"
+        },
+        {
+          "source": "config/pi/extensions/tool-rails.ts",
+          "target": "~/.pi/agent/extensions/tool-rails.ts"
+        },
+        {
+          "source": "config/pi/skills/bro/SKILL.md",
+          "target": "~/.pi/agent/skills/bro/SKILL.md"
+        },
+        {
+          "source": "config/pi/themes/ayu.json",
+          "target": "~/.pi/agent/themes/ayu.json"
+        }
+      ],
+      "ownedRoots": [
+        {
+          "target": "~/.pi/agent/extensions",
+          "preserve": ["herdr-agent-state.ts"]
+        },
+        {
+          "target": "~/.pi/agent/skills",
+          "preserve": []
+        },
+        {
+          "target": "~/.pi/agent/themes",
+          "preserve": []
+        },
+        {
+          "target": "~/.pi/agent/prompts",
+          "preserve": []
+        }
+      ],
+      "version": {
+        "command": ["pi", "--version"],
+        "regex": "^([0-9.]+)$",
+        "expected": "0.84.2"
+      },
+      "requirements": [
+        {
+          "name": "Node.js",
+          "command": ["node", "--version"],
+          "regex": "v([0-9.]+)",
+          "expected": "26.5.0"
+        }
+      ]
+    }
+  ],
+  "retired": {
+    "terminalProfiles": ["Xi", "ayu-dark"],
+    "terminalDefault": "Basic"
+  }
+}

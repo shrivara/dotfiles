@@ -1,0 +1,1068 @@
+#!/usr/bin/env python3
+"""Strict, manifest-driven dotfile manager."""
+
+from __future__ import annotations
+
+import argparse
+import fnmatch
+import hashlib
+import json
+import os
+import plistlib
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
+
+REPO = Path(__file__).resolve().parent
+MANIFEST_PATH = REPO / "dotfiles.json"
+USER_CONFIG_PATH = REPO / "dotfiles.user.json"
+USER_CONFIG_EXAMPLE_PATH = REPO / "dotfiles.user.example.json"
+HOME = Path.home().resolve()
+STATE_ROOT = Path(os.environ.get("XDG_STATE_HOME", str(HOME / ".local/state"))) / "dotfiles"
+STATE_PATH = STATE_ROOT / "state.json"
+LEGACY_STATE_PATH = STATE_ROOT / "links"
+BACKUP_ROOT = STATE_ROOT / "backups"
+
+
+class DotfilesError(RuntimeError):
+    pass
+
+
+def path_exists(path: Path) -> bool:
+    return path.exists() or path.is_symlink()
+
+
+def file_hash(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as file:
+        for chunk in iter(lambda: file.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def same_content(left: Path, right: Path) -> bool:
+    if not left.is_file() or not right.is_file():
+        return False
+    try:
+        if left.stat().st_size != right.stat().st_size:
+            return False
+    except OSError:
+        return False
+    return file_hash(left) == file_hash(right)
+
+
+def link_destination(path: Path) -> Optional[Path]:
+    if not path.is_symlink():
+        return None
+    raw = Path(os.readlink(str(path)))
+    if not raw.is_absolute():
+        raw = path.parent / raw
+    return raw.resolve(strict=False)
+
+
+def remove_path(path: Path) -> None:
+    if path.is_symlink() or not path.is_dir():
+        path.unlink()
+    else:
+        shutil.rmtree(str(path))
+
+
+def command_output(
+    command: Sequence[str],
+    *,
+    env: Optional[Dict[str, str]] = None,
+    timeout: int = 120,
+) -> Tuple[int, str]:
+    try:
+        result = subprocess.run(
+            list(command),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            env=env,
+            timeout=timeout,
+            check=False,
+        )
+    except FileNotFoundError:
+        return 127, f"command not found: {command[0]}"
+    except subprocess.TimeoutExpired:
+        return 124, f"command timed out: {' '.join(command)}"
+    return result.returncode, result.stdout.strip()
+
+
+class Backup:
+    def __init__(self, dry_run: bool) -> None:
+        self.dry_run = dry_run
+        self.directory: Optional[Path] = None
+
+    def ensure(self) -> Path:
+        if self.directory is not None:
+            return self.directory
+
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        candidate = BACKUP_ROOT / stamp
+        suffix = 1
+        while path_exists(candidate):
+            candidate = BACKUP_ROOT / f"{stamp}-{suffix}"
+            suffix += 1
+        self.directory = candidate
+        if not self.dry_run:
+            candidate.mkdir(parents=True)
+        return candidate
+
+    def destination(self, source: Path) -> Path:
+        try:
+            relative = source.relative_to(HOME)
+        except ValueError:
+            relative = Path("absolute") / str(source).lstrip("/")
+        destination = self.ensure() / relative
+        candidate = destination
+        suffix = 1
+        while path_exists(candidate):
+            candidate = destination.with_name(f"{destination.name}.{suffix}")
+            suffix += 1
+        return candidate
+
+    def move(self, source: Path, reason: str) -> None:
+        destination = self.destination(source)
+        print(f"  backup {source} -> {destination} ({reason})")
+        if self.dry_run:
+            return
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(source), str(destination))
+
+    def store(self, relative: Path, content: bytes, reason: str) -> None:
+        destination = self.ensure() / relative
+        print(f"  backup {relative} -> {destination} ({reason})")
+        if self.dry_run:
+            return
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(content)
+
+
+class Manager:
+    def __init__(self, *, dry_run: bool = False, assume_yes: bool = False) -> None:
+        self.dry_run = dry_run
+        self.assume_yes = assume_yes
+        self.manifest = self._load_manifest()
+        self.services = {service["name"]: service for service in self.manifest["services"]}
+        self.state = self._load_state()
+        self.backup = Backup(dry_run)
+        self._validate_manifest()
+        self.user_config = self._load_user_config()
+        self._validate_user_config()
+
+    @staticmethod
+    def _load_manifest() -> Dict[str, Any]:
+        try:
+            with MANIFEST_PATH.open(encoding="utf-8") as file:
+                manifest = json.load(file)
+        except (OSError, json.JSONDecodeError) as error:
+            raise DotfilesError(f"cannot load {MANIFEST_PATH}: {error}") from error
+        if manifest.get("schemaVersion") != 1:
+            raise DotfilesError("unsupported dotfiles.json schema")
+        return manifest
+
+    @staticmethod
+    def _load_user_config() -> Dict[str, Any]:
+        try:
+            with USER_CONFIG_PATH.open(encoding="utf-8") as file:
+                return json.load(file)
+        except FileNotFoundError as error:
+            raise DotfilesError(
+                f"missing required {USER_CONFIG_PATH.name}; copy "
+                f"{USER_CONFIG_EXAMPLE_PATH.name} and fill in your values"
+            ) from error
+        except (OSError, json.JSONDecodeError) as error:
+            raise DotfilesError(f"cannot load {USER_CONFIG_PATH}: {error}") from error
+
+    @staticmethod
+    def _load_state() -> Dict[str, Any]:
+        if not STATE_PATH.exists():
+            return {"schemaVersion": 1, "files": {}}
+        try:
+            with STATE_PATH.open(encoding="utf-8") as file:
+                state = json.load(file)
+        except (OSError, json.JSONDecodeError):
+            return {"schemaVersion": 1, "files": {}}
+        if state.get("schemaVersion") != 1 or not isinstance(state.get("files"), dict):
+            return {"schemaVersion": 1, "files": {}}
+        return state
+
+    @staticmethod
+    def source(file_spec: Dict[str, Any]) -> Path:
+        return (REPO / file_spec["source"]).resolve()
+
+    @staticmethod
+    def target(file_spec: Dict[str, Any]) -> Path:
+        value = file_spec["target"]
+        if value == "~":
+            return HOME
+        if isinstance(value, str) and value.startswith("~/"):
+            return HOME / value[2:]
+        raise DotfilesError(f"target must start with ~/: {value!r}")
+
+    def _validate_user_config(self) -> None:
+        if self.user_config.get("schemaVersion") != 1:
+            raise DotfilesError("dotfiles.user.json has an unsupported schemaVersion")
+
+        names = self.user_config.get("services")
+        if not isinstance(names, list) or any(not isinstance(name, str) for name in names):
+            raise DotfilesError("dotfiles.user.json services must be an array of service names")
+        if len(names) != len(set(names)):
+            raise DotfilesError("dotfiles.user.json contains duplicate services")
+        unknown = sorted(set(names) - set(self.services))
+        if unknown:
+            raise DotfilesError(f"dotfiles.user.json has unknown services: {', '.join(unknown)}")
+
+        if "git" in names:
+            git = self.user_config.get("git")
+            if not isinstance(git, dict):
+                raise DotfilesError("dotfiles.user.json must contain git.name and git.email")
+            for field in ("name", "email"):
+                value = git.get(field)
+                if (
+                    not isinstance(value, str)
+                    or not value.strip()
+                    or any(ord(character) < 32 for character in value)
+                ):
+                    raise DotfilesError(f"dotfiles.user.json git.{field} must be a non-empty single line")
+            if git["name"] == "Your Name" or git["email"] == "you@example.com":
+                raise DotfilesError("replace the example Git identity in dotfiles.user.json")
+
+    def enabled_services(self) -> List[Dict[str, Any]]:
+        enabled = set(self.user_config["services"])
+        return [service for service in self.manifest["services"] if service["name"] in enabled]
+
+    def files_for(self, services: Iterable[Dict[str, Any]]) -> List[Tuple[Dict[str, Any], Dict[str, Any]]]:
+        return [(service, spec) for service in services for spec in service.get("files", [])]
+
+    def generated_for(self, services: Iterable[Dict[str, Any]]) -> List[Tuple[Dict[str, Any], Dict[str, Any]]]:
+        return [(service, spec) for service in services for spec in service.get("generatedFiles", [])]
+
+    def service_targets(self, service: Dict[str, Any]) -> Set[Path]:
+        specs = list(service.get("files", [])) + list(service.get("generatedFiles", []))
+        return {self.target(spec) for spec in specs}
+
+    def _confirm_destructive(self, action: str, entries: Iterable[str]) -> None:
+        paths = sorted(set(entries))
+        if not paths:
+            return
+
+        print(f"\nWARNING: {action} will replace or remove:", file=sys.stderr)
+        for path in paths:
+            print(f"  - {path}", file=sys.stderr)
+        print(f"Conflicting data will be backed up under {BACKUP_ROOT}.", file=sys.stderr)
+
+        if self.dry_run or self.assume_yes:
+            return
+        if not sys.stdin.isatty():
+            raise DotfilesError("destructive changes require confirmation; rerun with --yes")
+        try:
+            answer = input("Continue? [y/N] ").strip().lower()
+        except (EOFError, KeyboardInterrupt) as error:
+            raise DotfilesError("cancelled") from error
+        if answer not in ("y", "yes"):
+            raise DotfilesError("cancelled")
+
+    def _validate_manifest(self) -> None:
+        names: Set[str] = set()
+        targets: Set[Path] = set()
+        sources: Set[Path] = set()
+
+        for service in self.manifest.get("services", []):
+            name = service.get("name")
+            if not isinstance(name, str) or not name or name in names:
+                raise DotfilesError(f"invalid or duplicate service name: {name!r}")
+            names.add(name)
+
+            for spec in service.get("files", []):
+                source = self.source(spec)
+                target = self.target(spec)
+                try:
+                    source.relative_to(REPO)
+                except ValueError as error:
+                    raise DotfilesError(f"source escapes repository: {source}") from error
+                if not source.is_file() or source.is_symlink():
+                    raise DotfilesError(f"managed source must be a regular file: {source}")
+                if source in sources:
+                    raise DotfilesError(f"source registered more than once: {source}")
+                if target in targets:
+                    raise DotfilesError(f"target registered more than once: {target}")
+                sources.add(source)
+                targets.add(target)
+
+            for spec in service.get("generatedFiles", []):
+                source = self.source(spec)
+                target = self.target(spec)
+                if spec.get("kind") != "gitIdentity" or name != "git":
+                    raise DotfilesError(f"unsupported generated file for {name}: {spec!r}")
+                try:
+                    source.relative_to(REPO / ".generated")
+                except ValueError as error:
+                    raise DotfilesError(f"generated source must be under .generated/: {source}") from error
+                if path_exists(source) and (not source.is_file() or source.is_symlink()):
+                    raise DotfilesError(f"generated source must be a regular file: {source}")
+                if target in targets:
+                    raise DotfilesError(f"target registered more than once: {target}")
+                targets.add(target)
+
+            for root_spec in service.get("ownedRoots", []):
+                root = self.target(root_spec)
+                try:
+                    root.relative_to(HOME)
+                except ValueError as error:
+                    raise DotfilesError(f"owned root escapes HOME: {root}") from error
+
+        config_files = {
+            path.resolve()
+            for path in (REPO / "config").rglob("*")
+            if path.is_file() and not path.is_symlink()
+        }
+        unregistered = sorted(config_files - sources)
+        missing = sorted(sources - config_files)
+        if unregistered:
+            paths = ", ".join(str(path.relative_to(REPO)) for path in unregistered)
+            raise DotfilesError(f"unregistered config files: {paths}")
+        if missing:
+            paths = ", ".join(str(path.relative_to(REPO)) for path in missing)
+            raise DotfilesError(f"registered sources outside config/: {paths}")
+
+        pi = next((service for service in self.manifest["services"] if service["name"] == "pi"), None)
+        if pi:
+            expected = pi.get("version", {}).get("expected")
+            settings = json.loads((REPO / "config/pi/settings.json").read_text(encoding="utf-8"))
+            if settings.get("lastChangelogVersion") != expected:
+                raise DotfilesError("Pi settings and manifest versions do not match")
+
+    def command_version(self, spec: Dict[str, Any]) -> Tuple[bool, str]:
+        command = [part.format(home=str(HOME)) for part in spec["command"]]
+        code, output = command_output(command)
+        label = spec.get("name") or command[0]
+        if code != 0:
+            return False, f"{label}: {output or f'exited {code}'}"
+        match = re.search(spec["regex"], output, re.MULTILINE | re.DOTALL)
+        if not match:
+            return False, f"{label}: could not parse version"
+        actual = match.group(1)
+        expected = spec["expected"]
+        if actual != expected:
+            return False, f"{label}: expected {expected}, found {actual}"
+        return True, f"{label} {actual}"
+
+    def version_issues(self, services: Iterable[Dict[str, Any]]) -> List[str]:
+        issues: List[str] = []
+        for service in services:
+            specs = []
+            if service.get("version"):
+                specs.append(service["version"])
+            specs.extend(service.get("requirements", []))
+            for spec in specs:
+                ok, message = self.command_version(spec)
+                if not ok:
+                    issues.append(f"{service['name']}: {message}")
+        return issues
+
+    def _is_previous_managed(self, target: Path) -> bool:
+        entry = self.state.get("files", {}).get(str(target))
+        if not entry:
+            return False
+        if entry.get("mode") == "link":
+            previous = Path(entry.get("source", "")).resolve(strict=False)
+            return link_destination(target) == previous
+        return False
+
+    @staticmethod
+    def _link_is_from_repo(target: Path) -> bool:
+        destination = link_destination(target)
+        if destination is None:
+            return False
+        try:
+            destination.relative_to(REPO)
+            return True
+        except ValueError:
+            return False
+
+    def _safe_to_replace(self, source: Path, target: Path) -> bool:
+        if self._is_previous_managed(target) or self._link_is_from_repo(target):
+            return True
+        return target.is_file() and not target.is_symlink() and same_content(source, target)
+
+    def _ensure_directory(self, directory: Path) -> None:
+        if directory == HOME:
+            return
+        try:
+            directory.relative_to(HOME)
+        except ValueError as error:
+            raise DotfilesError(f"refusing to create directory outside HOME: {directory}") from error
+
+        self._ensure_directory(directory.parent)
+        if directory.is_dir():
+            return
+        if path_exists(directory):
+            self.backup.move(directory, "parent path is not a directory")
+        print(f"  mkdir  {directory}")
+        if not self.dry_run:
+            directory.mkdir()
+
+    def _prepare_owned_root(self, root: Path) -> None:
+        if root.is_dir() and not root.is_symlink():
+            return
+        if path_exists(root):
+            self.backup.move(root, "owned root must be a directory")
+        self._ensure_directory(root.parent)
+        print(f"  mkdir  {root}")
+        if not self.dry_run:
+            root.mkdir()
+
+    @staticmethod
+    def _file_is_current(source: Path, target: Path) -> bool:
+        return link_destination(target) == source
+
+    def _install_file(self, service: str, source: Path, target: Path) -> None:
+        if self._file_is_current(source, target):
+            return
+
+        self._ensure_directory(target.parent)
+        if path_exists(target):
+            if self._safe_to_replace(source, target):
+                print(f"  remove {target} (previously managed)")
+                if not self.dry_run:
+                    remove_path(target)
+            else:
+                self.backup.move(target, "conflicts with managed file")
+
+        print(f"  link   {target} <- {source.relative_to(REPO)}")
+        if not self.dry_run:
+            target.symlink_to(source)
+
+    @staticmethod
+    def _git_config_value(value: str) -> str:
+        return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+    def _generated_content(self, spec: Dict[str, Any]) -> bytes:
+        if spec.get("kind") == "gitIdentity":
+            git = self.user_config["git"]
+            content = (
+                "[user]\n"
+                f"\tname = {self._git_config_value(git['name'])}\n"
+                f"\temail = {self._git_config_value(git['email'])}\n"
+            )
+            return content.encode("utf-8")
+        raise DotfilesError(f"unsupported generated file: {spec!r}")
+
+    def _generated_source_is_current(self, spec: Dict[str, Any]) -> bool:
+        source = self.source(spec)
+        return (
+            source.is_file()
+            and not source.is_symlink()
+            and source.read_bytes() == self._generated_content(spec)
+            and (source.stat().st_mode & 0o777) == 0o600
+        )
+
+    def _generated_is_current(self, spec: Dict[str, Any]) -> bool:
+        source = self.source(spec)
+        return self._generated_source_is_current(spec) and link_destination(self.target(spec)) == source
+
+    def _apply_generated_file(self, spec: Dict[str, Any]) -> None:
+        source = self.source(spec)
+        content = self._generated_content(spec)
+        if not self._generated_source_is_current(spec):
+            print(f"  generate {source.relative_to(REPO)} (from {USER_CONFIG_PATH.name})")
+            if not self.dry_run:
+                source.parent.mkdir(parents=True, exist_ok=True)
+                temporary = source.with_name(f".{source.name}.tmp")
+                temporary.write_bytes(content)
+                temporary.chmod(0o600)
+                temporary.replace(source)
+        self._install_file("git", source, self.target(spec))
+
+    @staticmethod
+    def _is_preserved(relative: str, patterns: Sequence[str]) -> bool:
+        return any(fnmatch.fnmatch(relative, pattern) for pattern in patterns)
+
+    def _prune_directory(
+        self,
+        directory: Path,
+        root: Path,
+        expected: Set[Path],
+        preserve: Sequence[str],
+    ) -> None:
+        if not directory.is_dir() or directory.is_symlink():
+            return
+
+        for entry in list(os.scandir(str(directory))):
+            path = Path(entry.path)
+            relative = path.relative_to(root).as_posix()
+            if path in expected or self._is_preserved(relative, preserve):
+                continue
+
+            if entry.is_dir(follow_symlinks=False) and not entry.is_symlink():
+                self._prune_directory(path, root, expected, preserve)
+                if path.is_dir() and not any(path.iterdir()):
+                    print(f"  remove {path} (empty unmanaged directory)")
+                    if not self.dry_run:
+                        path.rmdir()
+                continue
+
+            self.backup.move(path, "unmanaged entry in owned root")
+
+    def _prune_service(self, service: Dict[str, Any]) -> None:
+        targets = self.service_targets(service)
+        for root_spec in service.get("ownedRoots", []):
+            root = self.target(root_spec)
+            self._prepare_owned_root(root)
+            expected = {target for target in targets if target == root or root in target.parents}
+            self._prune_directory(root, root, expected, root_spec.get("preserve", []))
+
+    def _unexpected_entries(self, service: Dict[str, Any]) -> List[Path]:
+        targets = self.service_targets(service)
+        unexpected: List[Path] = []
+        for root_spec in service.get("ownedRoots", []):
+            root = self.target(root_spec)
+            if not root.is_dir() or root.is_symlink():
+                unexpected.append(root)
+                continue
+            preserve = root_spec.get("preserve", [])
+            for current, directories, files in os.walk(str(root), followlinks=False):
+                for name in files + directories:
+                    path = Path(current) / name
+                    relative = path.relative_to(root).as_posix()
+                    if path in targets or self._is_preserved(relative, preserve):
+                        continue
+                    if path.is_dir() and not path.is_symlink():
+                        continue
+                    unexpected.append(path)
+        return unexpected
+
+    def _cleanup_old_state(
+        self,
+        current_targets: Set[Path],
+        current_generated: Set[Path],
+    ) -> None:
+        for value in list(self.state.get("files", {})):
+            target = Path(value)
+            if target in current_targets:
+                continue
+            if self._is_previous_managed(target):
+                print(f"  remove {target} (retired managed target)")
+                if not self.dry_run:
+                    remove_path(target)
+            self.state["files"].pop(value, None)
+
+        for value, entry in list(self.state.get("generated", {}).items()):
+            target = Path(value)
+            if target in current_generated:
+                continue
+            source_value = entry.get("source")
+            previous_source: Optional[Path] = None
+            if source_value:
+                candidate = Path(source_value).resolve(strict=False)
+                try:
+                    candidate.relative_to(REPO / ".generated")
+                    previous_source = candidate
+                except ValueError:
+                    pass
+            if previous_source is not None and link_destination(target) == previous_source:
+                print(f"  remove {target} (retired generated configuration)")
+                if not self.dry_run:
+                    remove_path(target)
+            elif path_exists(target):
+                self.backup.move(target, "retired generated configuration")
+            if previous_source is not None and path_exists(previous_source):
+                print(f"  remove {previous_source} (retired generated source)")
+                if not self.dry_run:
+                    remove_path(previous_source)
+            self.state["generated"].pop(value, None)
+
+    def _integration_status(self, service: Dict[str, Any]) -> Tuple[bool, str]:
+        integration = service.get("integration")
+        if not integration:
+            return True, ""
+        if integration.get("provider") != "herdr":
+            return False, "unsupported integration provider"
+        code, output = command_output(["herdr", "integration", "status"])
+        if code != 0:
+            return False, output or "herdr integration status failed"
+        name = re.escape(integration["name"])
+        match = re.search(rf"^{name}: current \(v([0-9]+)\)", output, re.MULTILINE)
+        if not match:
+            return False, f"{integration['name']} integration is missing or outdated"
+        actual = match.group(1)
+        expected = integration["expectedVersion"]
+        if actual != expected:
+            return False, f"{integration['name']} integration expected v{expected}, found v{actual}"
+        return True, f"{integration['name']} integration v{actual}"
+
+    def _apply_hooks(self, services: Iterable[Dict[str, Any]], no_hooks: bool) -> None:
+        if no_hooks:
+            return
+        for service in services:
+            integration = service.get("integration")
+            if integration:
+                ok, _ = self._integration_status(service)
+                if not ok:
+                    command = ["herdr", "integration", "install", integration["name"]]
+                    print(f"  run    {' '.join(command)}")
+                    if not self.dry_run:
+                        code, output = command_output(command)
+                        if code != 0:
+                            raise DotfilesError(output or "failed to install Herdr integration")
+            if service["name"] == "herdr" and shutil.which("herdr"):
+                command = ["herdr", "server", "reload-config"]
+                print(f"  run    {' '.join(command)}")
+                if not self.dry_run:
+                    code, output = command_output(command)
+                    if code != 0 and "no server" not in output.lower():
+                        print(f"  warning: {output or 'Herdr config reload failed'}", file=sys.stderr)
+
+    def _terminal_preferences(self) -> Optional[bytes]:
+        if sys.platform != "darwin" or not shutil.which("defaults"):
+            return None
+        result = subprocess.run(
+            ["defaults", "export", "com.apple.Terminal", "-"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        return result.stdout if result.returncode == 0 else None
+
+    def retired_issues(self) -> List[str]:
+        content = self._terminal_preferences()
+        if content is None:
+            return []
+        preferences = plistlib.loads(content)
+        retired = set(self.manifest.get("retired", {}).get("terminalProfiles", []))
+        profiles = set(preferences.get("Window Settings", {}))
+        issues = [f"retired Terminal profile remains: {name}" for name in sorted(retired & profiles)]
+        for key in ("Default Window Settings", "Startup Window Settings"):
+            if preferences.get(key) in retired:
+                issues.append(f"Terminal {key} still uses retired profile {preferences[key]}")
+        return issues
+
+    def _apply_retired(self, full: bool) -> None:
+        if not full:
+            return
+        content = self._terminal_preferences()
+        if content is None:
+            return
+
+        preferences = plistlib.loads(content)
+        retired = set(self.manifest.get("retired", {}).get("terminalProfiles", []))
+        default = self.manifest.get("retired", {}).get("terminalDefault", "Basic")
+        profiles = preferences.get("Window Settings", {})
+        changed = False
+        for name in retired:
+            if name in profiles:
+                del profiles[name]
+                changed = True
+        for key in ("Default Window Settings", "Startup Window Settings"):
+            if preferences.get(key) in retired:
+                preferences[key] = default
+                changed = True
+        if not changed:
+            return
+
+        self.backup.store(Path("macos/com.apple.Terminal.plist"), content, "retiring unused profiles")
+        print(f"  retire Terminal profiles: {', '.join(sorted(retired))}")
+        if self.dry_run:
+            return
+        with tempfile.NamedTemporaryFile(suffix=".plist") as file:
+            plistlib.dump(preferences, file, fmt=plistlib.FMT_XML, sort_keys=False)
+            file.flush()
+            result = subprocess.run(
+                ["defaults", "import", "com.apple.Terminal", file.name],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=False,
+            )
+        if result.returncode != 0:
+            raise DotfilesError(result.stderr.strip() or "failed to update Terminal preferences")
+
+    def _write_state(self, services: Iterable[Dict[str, Any]]) -> None:
+        if self.dry_run:
+            return
+        selected = list(services)
+        current_targets = {
+            self.target(spec)
+            for service in selected
+            for spec in service.get("files", [])
+        }
+        current_generated = {
+            self.target(spec)
+            for service in selected
+            for spec in service.get("generatedFiles", [])
+        }
+        self.state["files"] = {
+            target: value
+            for target, value in self.state.get("files", {}).items()
+            if Path(target) in current_targets
+        }
+        self.state["generated"] = {
+            target: value
+            for target, value in self.state.get("generated", {}).items()
+            if Path(target) in current_generated
+        }
+        for service, spec in self.files_for(selected):
+            source = self.source(spec)
+            target = self.target(spec)
+            self.state["files"][str(target)] = {
+                "service": service["name"],
+                "source": str(source),
+                "mode": "link",
+                "sha256": file_hash(source),
+            }
+        for service, spec in self.generated_for(selected):
+            target = self.target(spec)
+            self.state["generated"][str(target)] = {
+                "service": service["name"],
+                "kind": spec["kind"],
+                "source": str(self.source(spec)),
+                "sha256": hashlib.sha256(self._generated_content(spec)).hexdigest(),
+            }
+        STATE_ROOT.mkdir(parents=True, exist_ok=True)
+        temporary = STATE_PATH.with_suffix(".tmp")
+        temporary.write_text(json.dumps(self.state, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        temporary.replace(STATE_PATH)
+        if LEGACY_STATE_PATH.exists():
+            LEGACY_STATE_PATH.unlink()
+
+    def save(self) -> None:
+        services = self.enabled_services()
+        testing = os.environ.get("DOTFILES_TESTING") == "1"
+
+        if not testing:
+            version_issues = self.version_issues(services)
+            if version_issues:
+                raise DotfilesError("version check failed:\n  " + "\n  ".join(version_issues))
+
+        issues: List[str] = []
+        changes: List[Tuple[Path, Path]] = []
+        for service in services:
+            for path in self._unexpected_entries(service):
+                if path_exists(path):
+                    issues.append(f"undeclared entry: {path}")
+            if not testing:
+                integration_ok, integration_message = self._integration_status(service)
+                if not integration_ok:
+                    issues.append(f"{service['name']}: {integration_message}")
+            for spec in service.get("files", []):
+                source = self.source(spec)
+                target = self.target(spec)
+                if not target.is_file():
+                    issues.append(f"missing managed file: {target}")
+                elif link_destination(target) != source and not same_content(source, target):
+                    changes.append((source, target))
+            for spec in service.get("generatedFiles", []):
+                target = self.target(spec)
+                if path_exists(target) and not self._generated_is_current(spec):
+                    issues.append(
+                        f"generated user configuration drifted: {target}; "
+                        f"edit {USER_CONFIG_PATH.name} or run apply"
+                    )
+        if issues:
+            raise DotfilesError("save refused:\n  " + "\n  ".join(issues))
+
+        self._confirm_destructive("save", (str(source) for source, _target in changes))
+        print(f"\nSaving: {', '.join(service['name'] for service in services) or 'no services'}")
+        originals: List[Tuple[Path, bytes, int]] = []
+        for source, target in changes:
+            original = source.read_bytes()
+            originals.append((source, original, source.stat().st_mode & 0o777))
+            self.backup.store(
+                Path("repository") / source.relative_to(REPO),
+                original,
+                "before save",
+            )
+            print(f"  save   {source.relative_to(REPO)} <- {target}")
+            if not self.dry_run:
+                shutil.copy2(str(target), str(source))
+
+        if self.dry_run:
+            print("\nDry run only; nothing was changed.")
+            return
+
+        if not testing:
+            repository_issues = self.repository_check(services)
+            if repository_issues:
+                for source, content, mode in originals:
+                    source.write_bytes(content)
+                    source.chmod(mode)
+                raise DotfilesError("saved configuration failed validation; sources restored:\n  " + "\n  ".join(repository_issues))
+
+        if self.backup.directory:
+            print(f"\nBackups: {self.backup.directory}")
+        if originals:
+            print("\nSave complete. Run ./dotfiles apply to restore symlinks.")
+        else:
+            print("\nRepository already matches the machine.")
+
+    def apply(self) -> None:
+        services = self.enabled_services()
+        testing = os.environ.get("DOTFILES_TESTING") == "1"
+
+        if not testing:
+            repository_issues = self.repository_check(services)
+            if repository_issues:
+                raise DotfilesError("source validation failed:\n  " + "\n  ".join(repository_issues))
+            version_issues = self.version_issues(services)
+            if version_issues:
+                raise DotfilesError("version check failed:\n  " + "\n  ".join(version_issues))
+
+        current_targets = {self.target(spec) for _, spec in self.files_for(services)}
+        current_generated = {self.target(spec) for _, spec in self.generated_for(services)}
+        destructive: List[str] = []
+        for service in services:
+            for spec in service.get("files", []):
+                source = self.source(spec)
+                target = self.target(spec)
+                if path_exists(target) and not self._file_is_current(source, target):
+                    destructive.append(str(target))
+            for spec in service.get("generatedFiles", []):
+                source = self.source(spec)
+                target = self.target(spec)
+                if path_exists(source) and not self._generated_source_is_current(spec):
+                    destructive.append(str(source))
+                if path_exists(target) and link_destination(target) != source:
+                    destructive.append(str(target))
+            destructive.extend(
+                str(path) for path in self._unexpected_entries(service) if path_exists(path)
+            )
+        for value in self.state.get("files", {}):
+            target = Path(value)
+            if target not in current_targets and self._is_previous_managed(target):
+                destructive.append(str(target))
+        for value, entry in self.state.get("generated", {}).items():
+            target = Path(value)
+            if target not in current_generated:
+                if path_exists(target):
+                    destructive.append(str(target))
+                source_value = entry.get("source")
+                if source_value:
+                    previous_source = Path(source_value).resolve(strict=False)
+                    try:
+                        previous_source.relative_to(REPO / ".generated")
+                    except ValueError:
+                        pass
+                    else:
+                        if path_exists(previous_source):
+                            destructive.append(str(previous_source))
+        if not testing and any(service["name"] == "ghostty" for service in services):
+            destructive.extend(self.retired_issues())
+        self._confirm_destructive("apply", destructive)
+
+        print(f"\nApplying: {', '.join(service['name'] for service in services) or 'no services'}")
+        self._cleanup_old_state(current_targets, current_generated)
+
+        for service in services:
+            for spec in service.get("files", []):
+                self._install_file(service["name"], self.source(spec), self.target(spec))
+            for spec in service.get("generatedFiles", []):
+                self._apply_generated_file(spec)
+            self._prune_service(service)
+
+        self._apply_hooks(services, testing)
+        if not testing and any(service["name"] == "ghostty" for service in services):
+            self._apply_retired(True)
+        self._write_state(services)
+
+        if self.backup.directory:
+            print(f"\nBackups: {self.backup.directory}")
+        if self.dry_run:
+            print("\nDry run only; nothing was changed.")
+            return
+        if not testing and not self.status(services, no_version_check=True, quiet=True):
+            raise DotfilesError("post-apply verification failed")
+        print("\nConfiguration is current.")
+
+    def file_status(self, source: Path, target: Path) -> Tuple[bool, str]:
+        if link_destination(target) == source:
+            return True, "linked"
+        if not path_exists(target):
+            return False, "missing"
+        return False, "not linked"
+
+    def status(
+        self,
+        services: Sequence[Dict[str, Any]],
+        *,
+        no_version_check: bool = False,
+        quiet: bool = False,
+    ) -> bool:
+        all_ok = True
+        if not quiet:
+            print("\nManaged services")
+        for service in services:
+            issues: List[str] = []
+            modes: Set[str] = set()
+            for spec in service.get("files", []):
+                ok, mode = self.file_status(self.source(spec), self.target(spec))
+                modes.add(mode)
+                if not ok:
+                    issues.append(f"{self.target(spec)} is {mode}")
+            for spec in service.get("generatedFiles", []):
+                if not self._generated_is_current(spec):
+                    issues.append(f"{self.target(spec)} has incorrect generated content")
+            for path in self._unexpected_entries(service):
+                issues.append(f"unmanaged entry: {path}")
+            integration_ok, integration_message = self._integration_status(service)
+            if not integration_ok:
+                issues.append(integration_message)
+            if not no_version_check:
+                issues.extend(self.version_issues([service]))
+
+            if issues:
+                all_ok = False
+                print(f"  FAIL {service['name']}")
+                for issue in issues:
+                    print(f"       - {issue}")
+            elif not quiet:
+                mode_label = "/".join(sorted(modes)) if modes else "generated"
+                suffix = f", {integration_message}" if integration_message else ""
+                print(f"  OK   {service['name']} ({mode_label}{suffix})")
+
+        if any(service["name"] == "ghostty" for service in services):
+            retired = self.retired_issues()
+            if retired:
+                all_ok = False
+                print("  FAIL retired resources")
+                for issue in retired:
+                    print(f"       - {issue}")
+        return all_ok
+
+    def repository_check(self, services: Sequence[Dict[str, Any]]) -> List[str]:
+        issues: List[str] = []
+        enabled = {service["name"] for service in services}
+
+        commands: List[Tuple[List[str], Optional[Dict[str, str]]]] = []
+        if "zsh" in enabled:
+            commands.append((["zsh", "-n", str(REPO / "config/zsh/zshrc")], None))
+        if "git" in enabled:
+            commands.append(
+                (["git", "config", "--file", str(REPO / "config/git/config"), "--list"], None)
+            )
+            git_source = (REPO / "config/git/config").read_text(encoding="utf-8")
+            if re.search(r"^\[user\]", git_source, re.MULTILINE):
+                issues.append("config/git/config must not contain personal identity; use dotfiles.user.json")
+        if "ghostty" in enabled:
+            commands.append(
+                (["ghostty", "+validate-config", f"--config-file={REPO / 'config/ghostty/config'}"], None)
+            )
+        if "herdr" in enabled:
+            herdr_env = dict(os.environ)
+            herdr_env["HERDR_CONFIG_PATH"] = str(REPO / "config/herdr/config.toml")
+            commands.append((["herdr", "config", "check"], herdr_env))
+        for command, env in commands:
+            code, output = command_output(command, env=env)
+            if code != 0:
+                issues.append(f"{' '.join(command)}: {output or f'exited {code}'}")
+
+        if "pi" in enabled:
+            try:
+                settings = json.loads((REPO / "config/pi/settings.json").read_text(encoding="utf-8"))
+                theme = json.loads((REPO / "config/pi/themes/ayu.json").read_text(encoding="utf-8"))
+                if settings.get("theme") != theme.get("name"):
+                    issues.append("Pi selected theme does not match config/pi/themes/ayu.json")
+                required_colors = {
+                    "accent", "border", "borderAccent", "borderMuted", "success", "error",
+                    "warning", "muted", "dim", "text", "thinkingText", "selectedBg",
+                    "userMessageBg", "userMessageText", "customMessageBg", "customMessageText",
+                    "customMessageLabel", "toolPendingBg", "toolSuccessBg", "toolErrorBg",
+                    "toolTitle", "toolOutput", "mdHeading", "mdLink", "mdLinkUrl", "mdCode",
+                    "mdCodeBlock", "mdCodeBlockBorder", "mdQuote", "mdQuoteBorder", "mdHr",
+                    "mdListBullet", "toolDiffAdded", "toolDiffRemoved", "toolDiffContext",
+                    "syntaxComment", "syntaxKeyword", "syntaxFunction", "syntaxVariable",
+                    "syntaxString", "syntaxNumber", "syntaxType", "syntaxOperator",
+                    "syntaxPunctuation", "thinkingOff", "thinkingMinimal", "thinkingLow",
+                    "thinkingMedium", "thinkingHigh", "thinkingXhigh", "bashMode",
+                }
+                missing_colors = sorted(required_colors - set(theme.get("colors", {})))
+                if missing_colors:
+                    issues.append(f"Ayu theme is missing colors: {', '.join(missing_colors)}")
+            except (OSError, json.JSONDecodeError) as error:
+                issues.append(f"Pi JSON: {error}")
+
+            skill = (REPO / "config/pi/skills/bro/SKILL.md").read_text(encoding="utf-8")
+            if not re.match(r"^---\n(?=.*^name:\s*bro\s*$)(?=.*^description:\s*.+$).*?\n---\n", skill, re.DOTALL | re.MULTILINE):
+                issues.append("bro skill has invalid frontmatter")
+
+        for path in REPO.rglob("*"):
+            if (
+                ".git" in path.parts
+                or ".generated" in path.parts
+                or path == USER_CONFIG_PATH
+                or not path.is_file()
+                or path.suffix == ".icns"
+            ):
+                continue
+            try:
+                text = path.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                continue
+            for line_number, line in enumerate(text.splitlines(), 1):
+                if line.endswith((" ", "\t")):
+                    issues.append(f"{path.relative_to(REPO)}:{line_number}: trailing whitespace")
+                    break
+            if text and not text.endswith("\n"):
+                issues.append(f"{path.relative_to(REPO)}: missing final newline")
+
+        if "pi" in enabled:
+            pi_home = Path(tempfile.mkdtemp(prefix="dotfiles-pi-check."))
+            try:
+                command = [
+                    "pi",
+                    "--no-extensions",
+                    "--no-skills",
+                    "--no-prompt-templates",
+                    "--no-themes",
+                ]
+                for extension in sorted((REPO / "config/pi/extensions").glob("*.ts")):
+                    command.extend(["--extension", str(extension)])
+                command.append("--list-models")
+                env = dict(os.environ)
+                env.update({"PI_CODING_AGENT_DIR": str(pi_home), "PI_OFFLINE": "1"})
+                code, output = command_output(command, env=env)
+                if code != 0:
+                    issues.append(f"Pi extensions: {output or f'exited {code}'}")
+            finally:
+                shutil.rmtree(str(pi_home), ignore_errors=True)
+
+        return issues
+
+
+def parser() -> argparse.ArgumentParser:
+    command = argparse.ArgumentParser(
+        description="Save machine configuration or apply repository symlinks",
+    )
+    command.add_argument(
+        "action",
+        choices=("save", "apply"),
+        help="save machine → repository or apply repository → machine",
+    )
+    command.add_argument("--dry-run", action="store_true", help="show changes without writing")
+    command.add_argument("--yes", action="store_true", help="confirm destructive changes")
+    return command
+
+
+def main(argv: Sequence[str]) -> int:
+    arguments = parser().parse_args(argv)
+    try:
+        manager = Manager(dry_run=arguments.dry_run, assume_yes=arguments.yes)
+        if arguments.action == "save":
+            manager.save()
+        else:
+            manager.apply()
+        return 0
+    except DotfilesError as error:
+        print(f"dotfiles: {error}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

@@ -1,0 +1,7 @@
+# Typography
+font-family = Berkeley Mono
+
+# Ayu across the terminal and application icon.
+theme = Ayu
+macos-icon = custom
+macos-custom-icon = ~/.config/ghostty/ayu-mirage.icns

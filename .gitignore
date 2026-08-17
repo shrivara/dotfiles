@@ -1,1 +1,9 @@
 .DS_Store
+*.swp
+__pycache__/
+*.pyc
+dotfiles.user.json
+.generated/
+
+# Local validation environments.
+.venv/
